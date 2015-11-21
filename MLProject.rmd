@@ -1,0 +1,146 @@
+---
+title: "Coursera Machine Learning Project"
+output: html_document
+---
+
+The goal of your project is to predict how well training exercises were performed. The data provides data from 6 paticipants on 5 different ways to performa the training exercise. Refer to the weight lifting section on http://groupware.les.inf.puc-rio.br/har for more information.
+
+The report below outlines how data is retrieved, cleaned up, and analyzed to provide the prediction for the testing set.
+
+# Loading and Cleaning Data
+After loading the data, I cleaned up the data to remove:
+
+* The first 7 columns since they are not predictor variables. 
+* 67 columns that have high number of NAs (97.9% of their values).
+* 9 columns with 1 to 4 factors that contain #DIV/0. 
+* 33 columns that have high number of Blanks (97.9% of their values).
+
+```{r, message=FALSE}
+# load libraries
+library(caret)
+
+# retrieving the training and test data sets
+trainingData <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+predictData <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+
+# remove the first 7 columns since they are NOT predictor variables
+print(colnames(trainingData[1:7]))
+cleanTrain <- trainingData[, 8:ncol(trainingData)]
+cleanPredict <- predictData[, 8:ncol(predictData)]
+
+#remove all columns with NA, Blanks, and ones that have factors including #DIV/0
+NACols <- data.frame(Variable=colnames(cleanTrain),
+                 NA_Count=sapply(cleanTrain, function(x) {sum(is.na(x))}),
+                 NumFactors=sapply(cleanTrain, function(x) {return(nlevels(x))}),
+                 Blanks=sapply(cleanTrain, function(x) { return(sum(x==""))}))
+NACols$NA_Percent <- round((NACols$NA_Count/nrow(cleanTrain))*100 , 1)
+NACols$Blank_Percent <- round((NACols$Blanks/nrow(cleanTrain))*100 , 1)
+NACols$OneToFourFactors <- (NACols$NumFactors>0 & NACols$NumFactors<=4)
+# Number of columns and percentage of NAs
+DF <- as.data.frame(table(NACols$NA_Percent)); colnames(DF) <- c("NA_Percent", "Column_Count"); DF
+# Number of columns and persentage of Blanks
+DF <- as.data.frame(table(NACols$Blank_Percent)); colnames(DF) <- c("Blank_Percent", "Column_Count"); DF
+# number of factor columns with #DIV/0 to remove
+DF <- as.data.frame(table(NACols$OneToFourFactors)); colnames(DF) <- c("OneToFourFactors", "Column_Count"); DF
+# remove columns from data set
+goodColsIndex <- which(NACols$NA_Count==0 & (NACols$NumFactors==0 | NACols$NumFactors>4) & (NACols$Blanks==0))
+cleanTrain <- cleanTrain[, goodColsIndex]
+cleanPredict <- cleanPredict[, goodColsIndex]
+```
+
+# Splitting the Data into Training and Test sets
+60% of the data for training, and 40% for testing
+```{r, message=FALSE}
+# split the data into inTrain & inTest
+inTrain <- createDataPartition(y=cleanTrain$classe, p=0.6, list=FALSE)
+train <- cleanTrain[inTrain, ]
+test  <- cleanTrain[-inTrain, ]
+```
+
+# Create the Prediction Model using GBM (Gradient Boosting Model)
+
+* I used GBM since it is a good machine learning technique for regression and classification problems that produces a model from multiple variables in the form of decision trees.
+* At n.tree=150: Accuracy=0.95, and Kappa=0.94. The high value of accuracy and kappa demontrates that the predictive model is acceptable.
+
+```{r, message=FALSE}
+# use gbm to build the prediction model
+## added the if statement below to avoid running the train function every time while I finish up the write up.
+set.seed(2355)
+if (file.exists("GBM.RDATA")==TRUE) 
+{
+  print("Loading data model from file.")
+  load("GBM.RDATA")
+} else
+{
+  print("Creating the data model.")
+  gbmFit <- train(classe~., data=train, method="gbm", verbose=FALSE)
+  save(gbmFit, file="GBM.RDATA")
+}
+
+# view model
+print(gbmFit)
+```
+
+# Evaluate the Model: Out of Sample Error
+Summary:
+
+* Accuracy is 0.97 and Kappa is 0.96
+* Around 97% of the evaluation samples are predicted correctly.
+
+```{r, message=FALSE}
+# predict the test set for evaluation
+predictGBMTest <- predict(gbmFit, test)
+
+# view prediction results
+confusionMatrix(predictGBMTest,test$classe)
+```
+
+### Out Of Sample Error
+
+```{r, message=FALSE}
+# Out of Sample Errors
+test$predRight <- (predictGBMTest==test$classe)
+DF <- as.data.frame(table(test$predRight)); colnames(DF) <- c("Right_Prediction", "Count")
+DF$Percentage <- round((DF$Count / sum(DF$Count)) * 100.0, 1) ; DF
+```
+
+### Actual vs. Predicted
+
+```{r, message=FALSE}
+# chart the prediction vs. Actual
+DF <- as.data.frame(table(predictGBMTest, test$classe))
+colnames(DF) <- c("Predicted", "Actual", "Frequency")
+g <- ggplot(DF, aes(x=Actual, y=Predicted))
+g <- g + geom_point(aes(size=Frequency), colour="red")
+g <- g + geom_text(aes(label=Frequency), colour="black")
+g <- g + ggtitle("Actual Value Vs. Predicted Value") + xlab("Actual") + ylab("Predicted")
+g <- g + theme_bw()
+print(g)
+```
+
+# Final Model
+Below are:
+
+* The list of columns by importance to the model
+* summary of the final model
+
+```{r, message=FALSE}
+# plot variables by importance
+plot(varImp(gbmFit), main = "Variable Importance - Top 25", top = 25)
+
+# sumary of final model
+gbmFit$finalModel
+```
+
+# Use the Model to predict the 20 testing cases
+
+```{r, message=FALSE}
+# predict the test set for evaluation
+predictGBM <- predict(gbmFit, cleanPredict)
+print(data.frame(Predicted_classe=predictGBM))
+
+# counts per classe type
+DF <- as.data.frame(table(predictGBM)); colnames(DF) <- c("Predicted_Value", "Count"); 
+DF$Percentage <- round((DF$Count / sum(DF$Count)) * 100.0, 1) ; DF
+```
+
